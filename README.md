@@ -4,10 +4,10 @@ Proyek Mata Kuliah **Sistem Operasi (TIK103)** — D4 Teknik Informatika, Polite
 Solusi pemantauan sumber daya sistem operasi Linux secara *real-time* berbasis Bash & Python dengan fitur mitigasi proses otomatis (*Auto-Renice*), proteksi sinkronisasi berkas (*File Locking*), dan antarmuka Web Grafik yang diakses dari Host Windows melalui jaringan *Host-Only*.
 
 ## Susunan Anggota Kelompok
-- **Kawthar** — Ketua Kelompok (Koordinasi & Manajemen Git)
+- **Kawthar Anugerah Kosasih** — Ketua Kelompok (Koordinasi & Manajemen Git)
 - **Aurel Ramdani** — Pengembang Inti (Agen Sensor Bash & Dashboard Python)
-- **Hafidz** — Penguji / QA (Skrip Simulasi Beban & Skenario Uji)
-- **Faith** — Dokumentator (Proposal, README, CHANGELOG, & Laporan)
+- **Abdillah Hafidz Arrie Muchlisin** — Penguji / QA (Skrip Simulasi Beban & Skenario Uji)
+- **Faith Kemal Arafi** — Dokumentator (Proposal, README, CHANGELOG, & Laporan)
 
 ## Cara Menjalankan Proyek (Reproduksi)
 
