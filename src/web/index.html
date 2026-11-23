@@ -1,0 +1,156 @@
+<!DOCTYPE html>
+<html lang="id">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>PRTG-Lite OS Monitor</title>
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='8' fill='%231c1a38'/%3E%3Cpath d='M8 21l5-6 4 3 7-9' stroke='%238b86ff' stroke-width='2.5' fill='none' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E">
+<link rel="stylesheet" href="/style.css">
+<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js" defer></script>
+<script src="/app.js" defer></script>
+</head>
+<body>
+
+<svg width="0" height="0" style="position:absolute" aria-hidden="true">
+  <defs>
+    <symbol id="i-grid" viewBox="0 0 24 24"><rect x="3" y="3" width="7" height="7" rx="1"/><rect x="14" y="3" width="7" height="7" rx="1"/><rect x="14" y="14" width="7" height="7" rx="1"/><rect x="3" y="14" width="7" height="7" rx="1"/></symbol>
+    <symbol id="i-cpu" viewBox="0 0 24 24"><rect x="5" y="5" width="14" height="14" rx="2"/><rect x="9" y="9" width="6" height="6"/><path d="M9 2v3M15 2v3M9 19v3M15 19v3M19 9h3M19 14h3M2 9h3M2 14h3"/></symbol>
+    <symbol id="i-server" viewBox="0 0 24 24"><rect x="2" y="3" width="20" height="8" rx="2"/><rect x="2" y="13" width="20" height="8" rx="2"/><path d="M6 7h.01M6 17h.01"/></symbol>
+    <symbol id="i-swap" viewBox="0 0 24 24"><path d="M17 2l4 4-4 4"/><path d="M3 12V10a4 4 0 0 1 4-4h14"/><path d="M7 22l-4-4 4-4"/><path d="M21 12v2a4 4 0 0 1-4 4H3"/></symbol>
+    <symbol id="i-disk" viewBox="0 0 24 24"><ellipse cx="12" cy="5" rx="9" ry="3"/><path d="M21 12c0 1.7-4 3-9 3s-9-1.3-9-3"/><path d="M3 5v14c0 1.7 4 3 9 3s9-1.3 9-3V5"/></symbol>
+    <symbol id="i-layers" viewBox="0 0 24 24"><path d="M12 2 2 7l10 5 10-5-10-5z"/><path d="M2 17l10 5 10-5"/><path d="M2 12l10 5 10-5"/></symbol>
+    <symbol id="i-activity" viewBox="0 0 24 24"><polyline points="22 12 18 12 15 21 9 3 6 12 2 12"/></symbol>
+    <symbol id="i-bell" viewBox="0 0 24 24"><path d="M18 8a6 6 0 0 0-12 0c0 7-3 9-3 9h18s-3-2-3-9"/><path d="M13.7 21a2 2 0 0 1-3.4 0"/></symbol>
+    <symbol id="i-term" viewBox="0 0 24 24"><polyline points="4 17 10 11 4 5"/><line x1="12" y1="19" x2="20" y2="19"/></symbol>
+    <symbol id="i-shield" viewBox="0 0 24 24"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/></symbol>
+  </defs>
+</svg>
+
+<div class="app">
+  <aside class="sidebar">
+    <div class="brand">
+      <span class="logo"><svg class="ico"><use href="#i-server"/></svg></span>
+      <span class="brand-name">PRTG-Lite</span>
+    </div>
+    <p class="eyebrow">OS RESOURCE MONITOR</p>
+    <nav class="nav">
+      <a href="#overview" class="active"><svg class="ico"><use href="#i-grid"/></svg>Overview</a>
+      <a href="#sensors"><svg class="ico"><use href="#i-cpu"/></svg>Sensors</a>
+      <a href="#charts"><svg class="ico"><use href="#i-activity"/></svg>Live Charts</a>
+      <a href="#process"><svg class="ico"><use href="#i-term"/></svg>Top Process</a>
+      <a href="#alerts"><svg class="ico"><use href="#i-bell"/></svg>Alerts</a>
+    </nav>
+    <div class="side-foot">
+      <span>TIK103 · Sistem Operasi</span>
+      <span>Politeknik Negeri Jakarta</span>
+    </div>
+  </aside>
+
+  <main class="main">
+    <header class="topbar" id="overview">
+      <div>
+        <h1>Overview</h1>
+        <p class="sub" id="last-update">Menunggu data dari sensor_agent.sh…</p>
+      </div>
+      <div class="top-right">
+        <span class="conn" id="conn"><i></i><span id="conn-text">Menghubungkan</span></span>
+        <div class="overall s-up" id="overall">
+          <span class="chip" id="overall-chip">Up</span>
+          <code id="overall-code">OK</code>
+        </div>
+      </div>
+    </header>
+
+    <section class="stat-grid" id="sensors" aria-label="Status sensor">
+      <article class="stat s-up" data-sensor="cpu">
+        <div class="gauge"><span></span></div>
+        <div class="stat-body">
+          <div class="stat-head"><svg class="ico"><use href="#i-cpu"/></svg><span>CPU Usage</span><em class="chip">Up</em></div>
+          <div class="stat-val"><b>0</b><small>%</small></div>
+          <div class="stat-delta">–</div>
+        </div>
+      </article>
+      <article class="stat s-up" data-sensor="mem">
+        <div class="gauge"><span></span></div>
+        <div class="stat-body">
+          <div class="stat-head"><svg class="ico"><use href="#i-server"/></svg><span>RAM Usage</span><em class="chip">Up</em></div>
+          <div class="stat-val"><b>0</b><small>%</small></div>
+          <div class="stat-delta">–</div>
+        </div>
+      </article>
+      <article class="stat s-up" data-sensor="swap">
+        <div class="gauge"><span></span></div>
+        <div class="stat-body">
+          <div class="stat-head"><svg class="ico"><use href="#i-swap"/></svg><span>Swap Usage</span><em class="chip">Up</em></div>
+          <div class="stat-val"><b>0</b><small>%</small></div>
+          <div class="stat-delta">–</div>
+        </div>
+      </article>
+      <article class="stat s-up" data-sensor="disk">
+        <div class="gauge"><span></span></div>
+        <div class="stat-body">
+          <div class="stat-head"><svg class="ico"><use href="#i-disk"/></svg><span>Disk (/)</span><em class="chip">Up</em></div>
+          <div class="stat-val"><b>0</b><small>%</small></div>
+          <div class="stat-delta">–</div>
+        </div>
+      </article>
+      <article class="stat s-up" data-sensor="threads">
+        <div class="gauge"><span></span></div>
+        <div class="stat-body">
+          <div class="stat-head"><svg class="ico"><use href="#i-layers"/></svg><span>Active Threads</span><em class="chip">Up</em></div>
+          <div class="stat-val"><b>0</b></div>
+          <div class="stat-delta">–</div>
+        </div>
+      </article>
+    </section>
+
+    <section class="chart-grid" id="charts">
+      <div class="panel">
+        <div class="panel-head"><h3>CPU Usage</h3><span class="muted" id="cpu-range">live</span></div>
+        <div class="chart-box"><canvas id="chart-cpu"></canvas></div>
+      </div>
+      <div class="panel">
+        <div class="panel-head"><h3>RAM &amp; Swap</h3><span class="muted" id="mem-range">live</span></div>
+        <div class="chart-box"><canvas id="chart-mem"></canvas></div>
+      </div>
+    </section>
+
+    <section class="bottom-grid">
+      <div class="panel">
+        <div class="panel-head"><h3>Sensor Status</h3></div>
+        <div class="donut-wrap">
+          <div class="donut">
+            <canvas id="chart-donut"></canvas>
+            <div class="donut-center"><small>Total</small><b id="donut-total">5</b></div>
+          </div>
+          <ul class="legend" id="legend">
+            <li><i style="background:var(--ok)"></i>Up <b id="lg-up">0</b></li>
+            <li><i style="background:var(--warn)"></i>Warning <b id="lg-warning">0</b></li>
+            <li><i style="background:var(--crit)"></i>Critical <b id="lg-critical">0</b></li>
+          </ul>
+        </div>
+      </div>
+
+      <div class="panel" id="alerts">
+        <div class="panel-head"><h3>Recent Alerts</h3><span class="muted" id="alert-count">0</span></div>
+        <ul class="alert-list" id="alert-list"><li class="empty">Belum ada peringatan ambang batas.</li></ul>
+      </div>
+
+      <div class="panel" id="process">
+        <div class="panel-head"><h3>Top Process &amp; Auto-Action</h3></div>
+        <div class="tile-stack">
+          <div class="tile">
+            <span class="tile-ico"><svg class="ico"><use href="#i-term"/></svg></span>
+            <div><small>Proses CPU tertinggi</small><b id="top-name">–</b><span id="top-meta" class="muted">PID – · 0% CPU</span></div>
+          </div>
+          <div class="tile">
+            <span class="tile-ico"><svg class="ico"><use href="#i-shield"/></svg></span>
+            <div><small>Auto-Action</small><b id="act-name">Standby</b><span id="act-meta" class="muted">Belum ada proses ditertibkan</span></div>
+          </div>
+        </div>
+      </div>
+    </section>
+  </main>
+</div>
+</body>
+</html>

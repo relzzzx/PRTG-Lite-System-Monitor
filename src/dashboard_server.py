@@ -1,136 +1,335 @@
 #!/usr/bin/env python3
-import http.server
-import socketserver
+"""PRTG-Lite OS Monitor - Web Dashboard Server.
+
+Membaca logs/sysmon.csv & logs/alerts.log (hasil sensor_agent.sh) dan
+menyajikannya sebagai dashboard web di 0.0.0.0:8080 (akses lewat Host-Only).
+
+Endpoint:
+    GET /              -> dashboard (src/web/index.html)
+    GET /api/metrics   -> JSON metrik, status per sensor, alert (?n=60)
+
+Pembacaan log memakai flock bersama (LOCK_SH) pada berkas kunci yang sama
+dengan agen sensor, sehingga tidak terjadi race condition (Praktikum 5).
+"""
+from __future__ import annotations
+
+import csv
+import fcntl
 import json
 import os
+import re
+import subprocess
+import sys
+import time
+from collections import deque
+from contextlib import contextmanager
+from datetime import datetime
+from http import HTTPStatus
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from itertools import chain
+from pathlib import Path
+from urllib.parse import parse_qs, urlparse
 
-PORT = 8080
-BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-CSV_LOG = os.path.join(BASE_DIR, "logs", "sysmon.csv")
-ALERT_LOG = os.path.join(BASE_DIR, "logs", "alerts.log")
+SRC_DIR = Path(__file__).resolve().parent
+BASE_DIR = SRC_DIR.parent
+WEB_DIR = SRC_DIR / "web"
+CONF_FILE = Path(os.environ.get("PRTG_CONF", SRC_DIR / "prtg.conf"))
+LOG_DIR = Path(os.environ.get("PRTG_LOG_DIR", BASE_DIR / "logs"))
+CSV_LOG = LOG_DIR / "sysmon.csv"
+ALERT_LOG = LOG_DIR / "alerts.log"
 
-HTML_PAGE = """<!DOCTYPE html>
-<html lang="id">
-<head>
-    <meta charset="UTF-8">
-    <title>PRTG-Lite OS Resource Monitor</title>
-    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
-    <style>
-        body { font-family: 'Segoe UI', sans-serif; background: #0f172a; color: #f8fafc; margin: 0; padding: 20px; }
-        .header { display: flex; justify-content: space-between; align-items: center; border-bottom: 1px solid #334155; padding-bottom: 10px; margin-bottom: 20px; }
-        .cards { display: grid; grid-template-columns: repeat(5, 1fr); gap: 15px; margin-bottom: 20px; }
-        .card { background: #1e293b; padding: 15px; border-radius: 8px; border-left: 5px solid #22c55e; }
-        .card.warn { border-left-color: #ef4444; background: #3b1c22; }
-        .card h4 { margin: 0 0 5px 0; color: #94a3b8; font-size: 13px; }
-        .card .val { font-size: 26px; font-weight: bold; }
-        .grid-main { display: grid; grid-template-columns: 2fr 1fr; gap: 20px; }
-        .panel { background: #1e293b; padding: 15px; border-radius: 8px; }
-        pre { background: #090d16; padding: 10px; border-radius: 6px; color: #f87171; font-size: 12px; height: 220px; overflow-y: auto; white-space: pre-wrap; }
-    </style>
-</head>
-<body>
-    <div class="header">
-        <div>
-            <h2 style="margin:0;">PRTG-Lite: Sistem Operasi Sensor Dashboard</h2>
-            <small style="color:#94a3b8;">TIK103 Proyek Sistem Operasi - Live Probe Sensor</small>
-        </div>
-        <div id="status-badge" style="padding: 8px 16px; border-radius: 6px; background: #22c55e; font-weight: bold;">STATUS: OK</div>
-    </div>
-    <div class="cards">
-        <div class="card" id="c-cpu"><h4>SENSOR CPU</h4><div class="val" id="v-cpu">0%</div></div>
-        <div class="card" id="c-mem"><h4>SENSOR RAM</h4><div class="val" id="v-mem">0%</div></div>
-        <div class="card" id="c-swap"><h4>SENSOR SWAP</h4><div class="val" id="v-swap">0%</div></div>
-        <div class="card" id="c-disk"><h4>SENSOR DISK (/)</h4><div class="val" id="v-disk">0%</div></div>
-        <div class="card"><h4>ACTIVE THREADS</h4><div class="val" id="v-thr">0</div></div>
-    </div>
-    <div class="grid-main">
-        <div class="panel">
-            <h4 style="margin-top:0;">Live Sensor Channels (CPU, RAM, Swap %)</h4>
-            <canvas id="liveChart" height="110"></canvas>
-        </div>
-        <div class="panel">
-            <h4 style="margin-top:0;">Top Process & Log Mitigasi Otomatis (Auto-Renice)</h4>
-            <p id="top-proc" style="font-size:14px; color:#38bdf8;">Menunggu data...</p>
-            <pre id="alert-box">Belum ada peringatan ambang batas.</pre>
-        </div>
-    </div>
-<script>
-const ctx = document.getElementById('liveChart').getContext('2d');
-const chart = new Chart(ctx, {
-    type: 'line',
-    data: { labels: [], datasets: [
-        { label: 'CPU %', data: [], borderColor: '#38bdf8', tension: 0.3 },
-        { label: 'RAM %', data: [], borderColor: '#a855f7', tension: 0.3 },
-        { label: 'Swap %', data: [], borderColor: '#eab308', tension: 0.3 }
-    ]},
-    options: { scales: { y: { min: 0, max: 100 } }, animation: false }
-});
+HOST = "0.0.0.0"  # wajib 0.0.0.0 agar bisa diakses dari Windows via Host-Only
+PORT = int(os.environ.get("PRTG_PORT", "8080"))
+DEFAULT_POINTS = 60
+MAX_POINTS = 300
+ALERT_LINES = 12
 
-async function fetchMetrics() {
-    const res = await fetch('/api/metrics');
-    const data = await res.json();
-    if (!data.rows.length) return;
-    const last = data.rows[data.rows.length - 1];
-    document.getElementById('v-cpu').innerText = last.cpu + '%';
-    document.getElementById('v-mem').innerText = last.mem + '%';
-    document.getElementById('v-swap').innerText = last.swap + '%';
-    document.getElementById('v-disk').innerText = last.disk + '%';
-    document.getElementById('v-thr').innerText = last.threads;
-    document.getElementById('top-proc').innerText = `Proses Tertinggi: ${last.top_proc} (PID: ${last.top_pid}) - ${last.top_cpu}% CPU`;
-
-    document.getElementById('c-cpu').className = last.cpu >= 75 ? 'card warn' : 'card';
-    const badge = document.getElementById('status-badge');
-    badge.innerText = 'STATUS: ' + last.status;
-    badge.style.background = last.status === 'OK' ? '#22c55e' : '#ef4444';
-
-    chart.data.labels = data.rows.map(r => r.timestamp.split(' ')[1]);
-    chart.data.datasets[0].data = data.rows.map(r => r.cpu);
-    chart.data.datasets[1].data = data.rows.map(r => r.mem);
-    chart.data.datasets[2].data = data.rows.map(r => r.swap);
-    chart.update();
-
-    if (data.alerts) document.getElementById('alert-box').innerText = data.alerts;
+CONF_DEFAULTS = {
+    "INTERVAL": 5,
+    "CPU_WARN": 80, "CPU_CRIT": 95,
+    "MEM_WARN": 80, "MEM_CRIT": 90,
+    "SWAP_WARN": 50, "SWAP_CRIT": 80,
+    "DISK_WARN": 80, "DISK_CRIT": 90,
+    "LOCK_FILE": "/tmp/sysmon.lock",
 }
-setInterval(fetchMetrics, 3000);
-fetchMetrics();
-</script>
-</body>
-</html>
-"""
 
-class Handler(http.server.BaseHTTPRequestHandler):
-    def do_GET(self):
-        if self.path == '/api/metrics':
-            rows = []
-            if os.path.exists(CSV_LOG):
-                with open(CSV_LOG, 'r') as f:
-                    lines = f.read().strip().split('\n')[1:][-20:]
-                    for line in lines:
-                        p = line.split(',')
-                        if len(p) >= 10:
-                            rows.append({
-                                "timestamp": p[0], "cpu": float(p[1]), "mem": float(p[2]),
-                                "swap": float(p[3]), "disk": float(p[4]), "threads": int(p[5]),
-                                "top_pid": p[6], "top_proc": p[7], "top_cpu": p[8], "status": p[9]
-                            })
-            alerts = ""
-            if os.path.exists(ALERT_LOG):
-                with open(ALERT_LOG, 'r') as af:
-                    alerts = "".join(af.readlines()[-10:])
-            self.send_response(200)
-            self.send_header('Content-Type', 'application/json')
-            self.end_headers()
-            self.wfile.write(json.dumps({"rows": rows, "alerts": alerts}).encode())
+# Nama kolom proposal (Tabel 5) -> nama internal; nama lama tetap diterima
+COLUMN_ALIASES = {
+    "cpu_usage": "cpu", "mem_usage": "mem", "swap_usage": "swap",
+    "disk_usage": "disk", "total_threads": "threads",
+    "top_proc_name": "top_proc", "top_proc_cpu": "top_cpu",
+}
+DEFAULT_COLUMNS = ["timestamp", "cpu", "mem", "swap", "disk", "threads",
+                   "top_pid", "top_proc", "top_cpu", "status"]
+
+STATIC_ROUTES = {
+    "/": ("index.html", "text/html; charset=utf-8"),
+    "/index.html": ("index.html", "text/html; charset=utf-8"),
+    "/style.css": ("style.css", "text/css; charset=utf-8"),
+    "/app.js": ("app.js", "application/javascript; charset=utf-8"),
+}
+
+ALERT_RE = re.compile(r"^\[(?P<ts>[^\]]+)\]\s*(?P<level>INFO|WARNING|CRITICAL)\b[^:]*:?\s*(?P<msg>.*)$")
+
+
+# --------------------------------------------------------------------------- #
+# Konfigurasi & pembacaan log
+# --------------------------------------------------------------------------- #
+def load_conf() -> dict:
+    """Baca src/prtg.conf (KUNCI=NILAI); nilai tidak valid memakai default."""
+    conf = dict(CONF_DEFAULTS)
+    try:
+        text = CONF_FILE.read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        return conf
+    for raw in text.splitlines():
+        line = raw.split("#", 1)[0].strip()
+        if "=" not in line:
+            continue
+        key, _, value = line.partition("=")
+        key, value = key.strip(), value.strip().strip("'\"")
+        if key not in conf:
+            continue
+        if isinstance(CONF_DEFAULTS[key], int):
+            if value.isdigit():
+                conf[key] = int(value)
+        elif value:
+            conf[key] = value
+    return conf
+
+
+@contextmanager
+def shared_lock(lock_path: str):
+    """flock LOCK_SH pada berkas kunci agen. Bila tidak tersedia, tetap membaca."""
+    fd = None
+    try:
+        fd = os.open(lock_path, os.O_RDONLY)
+        deadline = time.monotonic() + 1.0
+        while True:
+            try:
+                fcntl.flock(fd, fcntl.LOCK_SH | fcntl.LOCK_NB)
+                break
+            except BlockingIOError:
+                if time.monotonic() >= deadline:
+                    break  # jangan menggantung bila agen menahan kunci terlalu lama
+                time.sleep(0.02)
+    except OSError:
+        pass  # berkas kunci belum ada / tidak boleh dibaca
+    try:
+        yield
+    finally:
+        if fd is not None:
+            try:
+                fcntl.flock(fd, fcntl.LOCK_UN)
+            finally:
+                os.close(fd)
+
+
+def _to_float(value: str, default: float = 0.0) -> float:
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return default
+
+
+def parse_row(cells: list[str], columns: list[str]) -> dict | None:
+    """Ubah satu baris CSV menjadi dict; baris terpotong/rusak -> None."""
+    if len(cells) < len(columns):
+        return None
+    d = dict(zip(columns, (c.strip() for c in cells)))
+    try:
+        return {
+            "timestamp": d["timestamp"],
+            "cpu": float(d["cpu"]), "mem": float(d["mem"]),
+            "swap": float(d["swap"]), "disk": float(d["disk"]),
+            "threads": int(float(d["threads"])),
+            "top_pid": d["top_pid"], "top_proc": d["top_proc"],
+            "top_cpu": _to_float(d["top_cpu"]),
+            "status": d.get("status") or "OK",
+        }
+    except (KeyError, ValueError):
+        return None
+
+
+def read_rows(limit: int, lock_path: str) -> list[dict]:
+    if not CSV_LOG.exists():
+        return []
+    with shared_lock(lock_path):
+        try:
+            with CSV_LOG.open("r", encoding="utf-8", errors="replace", newline="") as fh:
+                reader = csv.reader(fh)
+                first = next(reader, None)
+                if first is None:
+                    return []
+                if first and first[0].strip().lower() == "timestamp":
+                    columns = [COLUMN_ALIASES.get(c.strip(), c.strip()) for c in first]
+                    tail = deque(reader, maxlen=limit)
+                else:  # tanpa header
+                    columns = DEFAULT_COLUMNS
+                    tail = deque(chain([first], reader), maxlen=limit)
+        except OSError:
+            return []
+    rows = (parse_row(cells, columns) for cells in tail)
+    return [r for r in rows if r]
+
+
+def read_alerts(limit: int, lock_path: str) -> list[dict]:
+    if not ALERT_LOG.exists():
+        return []
+    with shared_lock(lock_path):
+        try:
+            with ALERT_LOG.open("r", encoding="utf-8", errors="replace") as fh:
+                lines = list(deque(fh, maxlen=limit))
+        except OSError:
+            return []
+    alerts = []
+    for line in lines:
+        line = line.strip()
+        if not line:
+            continue
+        m = ALERT_RE.match(line)
+        if m:
+            alerts.append({"time": m["ts"], "level": m["level"], "message": m["msg"]})
         else:
-            self.send_response(200)
-            self.send_header('Content-Type', 'text/html')
-            self.end_headers()
-            self.wfile.write(HTML_PAGE.encode())
-    def log_message(self, format, *args):
+            alerts.append({"time": "", "level": "INFO", "message": line})
+    return alerts
+
+
+# --------------------------------------------------------------------------- #
+# Status sensor (Up / Warning / Critical)
+# --------------------------------------------------------------------------- #
+def sensor_state(value: float, warn: int, crit: int) -> str:
+    if value >= crit:
+        return "critical"
+    if value >= warn:
+        return "warning"
+    return "up"
+
+
+def state_from_status(status: str) -> str:
+    s = status.upper()
+    if "CRITICAL" in s:
+        return "critical"
+    if "WARN" in s:
+        return "warning"
+    return "up"
+
+
+def build_payload(points: int) -> dict:
+    conf = load_conf()
+    lock_path = str(conf["LOCK_FILE"])
+    rows = read_rows(points, lock_path)
+    alerts = read_alerts(ALERT_LINES, lock_path)
+    thresholds = {k: {"warn": conf[f"{k.upper()}_WARN"], "crit": conf[f"{k.upper()}_CRIT"]}
+                  for k in ("cpu", "mem", "swap", "disk")}
+    payload = {
+        "rows": rows, "alerts": alerts, "thresholds": thresholds,
+        "interval": conf["INTERVAL"], "latest": None,
+        "server_time": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+    }
+    if not rows:
+        return payload
+
+    last = rows[-1]
+    states = {k: sensor_state(last[k], thresholds[k]["warn"], thresholds[k]["crit"])
+              for k in thresholds}
+    states["threads"] = "up"  # proposal tidak mendefinisikan ambang untuk thread
+    try:
+        age = max(0, int((datetime.now() - datetime.strptime(last["timestamp"], "%Y-%m-%d %H:%M:%S")).total_seconds()))
+    except ValueError:
+        age = None
+    status = last["status"].upper()
+    action = "renice" if "RENICED" in status else "kill" if "KILLED" in status else None
+    payload["latest"] = {
+        **last,
+        "states": states,
+        "overall": state_from_status(last["status"]),
+        "action": action,
+        "age_seconds": age,
+        "summary": {s: sum(1 for v in states.values() if v == s)
+                    for s in ("up", "warning", "critical")},
+    }
+    return payload
+
+
+# --------------------------------------------------------------------------- #
+# HTTP
+# --------------------------------------------------------------------------- #
+class Handler(BaseHTTPRequestHandler):
+    server_version = "PRTGLite/1.0"
+
+    def _send(self, status: int, body: bytes, ctype: str, no_store: bool = False) -> None:
+        self.send_response(status)
+        self.send_header("Content-Type", ctype)
+        self.send_header("Content-Length", str(len(body)))
+        self.send_header("X-Content-Type-Options", "nosniff")
+        if no_store:
+            self.send_header("Cache-Control", "no-store")
+        self.end_headers()
+        self.wfile.write(body)
+
+    def _send_json(self, status: int, obj: dict) -> None:
+        self._send(status, json.dumps(obj).encode("utf-8"), "application/json", no_store=True)
+
+    def do_GET(self) -> None:  # noqa: N802 (nama method ditentukan http.server)
+        url = urlparse(self.path)
+        try:
+            if url.path == "/api/metrics":
+                try:
+                    n = int(parse_qs(url.query).get("n", [DEFAULT_POINTS])[0])
+                except ValueError:
+                    n = DEFAULT_POINTS
+                self._send_json(HTTPStatus.OK, build_payload(max(1, min(n, MAX_POINTS))))
+            elif url.path in STATIC_ROUTES:
+                fname, ctype = STATIC_ROUTES[url.path]
+                self._send(HTTPStatus.OK, (WEB_DIR / fname).read_bytes(), ctype, no_store=True)
+            else:
+                self._send_json(HTTPStatus.NOT_FOUND, {"error": "not found"})
+        except (BrokenPipeError, ConnectionResetError):
+            pass  # browser menutup koneksi lebih dulu
+        except Exception as exc:  # satu request gagal tidak boleh mematikan server
+            print(f"[ERROR] {self.path}: {exc!r}", file=sys.stderr)
+            try:
+                self._send_json(HTTPStatus.INTERNAL_SERVER_ERROR, {"error": "internal error"})
+            except OSError:
+                pass
+
+    def log_message(self, fmt: str, *args) -> None:  # senyap; error tetap ke stderr
         return
 
-if __name__ == "__main__":
-    socketserver.TCPServer.allow_reuse_address = True
-    print(f"[INFO] PRTG-Lite Web Dashboard aktif di http://0.0.0.0:{PORT}")
-    with socketserver.TCPServer(("", PORT), Handler) as httpd:
+
+def local_ipv4_addresses() -> list[str]:
+    try:
+        out = subprocess.run(["ip", "-4", "-o", "addr", "show"], capture_output=True,
+                             text=True, timeout=2).stdout
+    except (OSError, subprocess.SubprocessError):
+        return []
+    ips = (m.group(1) for m in re.finditer(r"inet (\d+\.\d+\.\d+\.\d+)", out))
+    return [ip for ip in ips if not ip.startswith("127.")]
+
+
+def main() -> int:
+    if not (WEB_DIR / "index.html").exists():
+        print(f"[ERROR] Berkas dashboard tidak ditemukan di {WEB_DIR}", file=sys.stderr)
+        return 1
+    try:
+        httpd = ThreadingHTTPServer((HOST, PORT), Handler)
+    except OSError as exc:
+        print(f"[ERROR] Tidak bisa bind {HOST}:{PORT} - {exc}", file=sys.stderr)
+        return 1
+    httpd.daemon_threads = True
+    print(f"[INFO] PRTG-Lite Web Dashboard aktif di http://{HOST}:{PORT}")
+    for ip in local_ipv4_addresses():
+        print(f"[INFO]   buka dari Windows Host: http://{ip}:{PORT}")
+    print(f"[INFO] Membaca log dari: {LOG_DIR}  (Ctrl+C untuk berhenti)")
+    try:
         httpd.serve_forever()
+    except KeyboardInterrupt:
+        print("\n[INFO] Dashboard dihentikan.")
+    finally:
+        httpd.server_close()
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())
