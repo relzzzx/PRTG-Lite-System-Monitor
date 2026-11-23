@@ -24,13 +24,13 @@
 - Penyelesaian prototipe awal (MVP) `sensor_agent.sh` untuk pembacaan metrik dasar.
 - Evaluasi jaringan dasar VM Ubuntu dan Windows.
 
-### Minggu 2 (Fase Fitur Lanjutan & Visualisasi)
+### Minggu 2 (Fase Fitur Lanjutan & Visualisasi) - Selesai ✅
 - Implementasi fitur threshold dan Auto-Action (renice/kill) pada skrip Bash.
 - Penerapan sinkronisasi berkas (file locking dengan flock) dan izin chmod 640 pada file log.
 - Pembuatan web dashboard berbasis Python (`dashboard_server.py`) dengan Chart.js.
 - Konfigurasi jaringan Host-only dan UFW firewall.
 
-### Minggu 3 (Fase Pengujian & Dokumentasi Tambahan)
+### Minggu 3 (Fase Pengujian & Dokumentasi Tambahan) - Selesai ✅
 - Pelaksanaan pengujian beban CPU (Stress Test) oleh QA.
 - Pelaksanaan pengujian keamanan berkas (Concurrency & Permission Test).
 - Pelaksanaan uji konektivitas lintas VM.
